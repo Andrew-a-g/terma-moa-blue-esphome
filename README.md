@@ -52,8 +52,9 @@ GND    ───── GND
 DATA   ───── GPIO4 (configurable)
 ```
 
-**Note:** Some DHT22 modules require a 10kΩ pull-up resistor between VCC (3.3V) and the DATA pin for reliable readings. Modules with a built-in PCB typically include this resistor.  The module tested is shown in the picture below.
+![DHT22 Wiring Diagram](esp-dht22-wiring.png)
 
+**Note:** Some DHT22 modules require a 10kΩ pull-up resistor between VCC (3.3V) and the DATA pin for reliable readings. Modules with a built-in PCB typically include this resistor.  The module tested is shown in the picture below.
 
 
 ## Installation
@@ -265,7 +266,7 @@ This project is provided as-is for personal use. The Terma MOA Blue protocol was
 
 - [Home Assistant Community](https://community.home-assistant.io/t/terma-blue-line-bluetooth-radiators-and-heating-elements/81325) - Protocol reverse engineering
 - [ESPHome](https://esphome.io/) - Excellent IoT firmware framework
-- [Anthropic Claude](https://claude.ai/) - AI assistance in developing this integration to solve the bluetooth persistent connection pain.
+- [Anthropic Claude](https://claude.ai/) - AI assistance in developing this integration to solve the bluetooth persistent connection pain
 
 ## Contributing
 
