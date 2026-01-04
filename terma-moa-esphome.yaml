@@ -1,0 +1,440 @@
+substitutions:
+  device_name: terma-moa-blue
+  friendly_name: "Terma Moa BLue Radiator"
+  # Replace with your Terma MOA Blue MAC address - see on android settings or the nrf connect app
+  radiator_mac: "xx:xx:xx:xx:xx:xx"
+  # DHT22 data pin - change to match your wiring - Note that you may need a 10k resistor between VCC (3.3v) and GPIO4 for accurate readings (depending on which DHT22 you use with or without board)
+  dht_pin: GPIO4
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  platformio_options:
+    board_build.flash_mode: dio
+  # Include BLE security headers
+  includes:
+    - terma_ble_helper.h
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging - debug mode for first release while I complete testing
+logger:
+  level: DEBUG
+  logs:
+    esp32_ble_client: DEBUG
+    ble_client: DEBUG
+
+# Enable the Home Assistant API
+api:
+#  encryption:
+#    key: !secret api_encryption_key # uncomment this if you use an encryption key.
+
+ota:
+  - platform: esphome
+#    password: !secret ota_password # uncomment this if you use an ota password.
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  
+  # Enable fallback hotspot
+  ap:
+    ssid: "${device_name} Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+# Enable BLE with keyboard capability for PIN entry
+esp32_ble:
+  io_capability: keyboard_only
+
+# Enable the Bluetooth tracker
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    interval: 320ms
+    window: 30ms
+
+# Persistent connections to these devices need encryption - otherwise the device can only be controlled if connected in pair mode.
+# The first bootup the moa device must be in pair mode and any connections afterwards can be normal.
+ble_client:
+  - mac_address: ${radiator_mac}
+    id: terma_moa_ble_client
+    auto_connect: true
+    on_connect:
+      then:
+        - logger.log: "BLE client connected - requesting encryption..."
+        - lambda: |-
+            // Force encryption on the connection
+            uint8_t remote_bda[6];
+            esp_bd_addr_t bda;
+            sscanf("${radiator_mac}", "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                   &bda[0], &bda[1], &bda[2], &bda[3], &bda[4], &bda[5]);
+            esp_ble_set_encryption(bda, ESP_BLE_SEC_ENCRYPT);
+            ESP_LOGI("terma", "Encryption requested for bonded device");
+        - delay: 2s
+        - lambda: |-
+            id(is_connected) = true;
+        - logger.log: "BLE connection ready"
+    on_passkey_request:
+      then:
+        - logger.log: "Passkey requested by radiator - sending 123456"
+        - ble_client.passkey_reply:
+            id: terma_moa_ble_client
+            passkey: 123456
+    on_passkey_notification:
+      then:
+        - logger.log:
+            format: "Passkey notification received: %d"
+            args: ['passkey']
+    on_disconnect:
+      then:
+        - logger.log: "BLE client disconnected!"
+        - lambda: |-
+            id(is_connected) = false;
+
+# Globals to store state
+globals:
+  - id: target_temp
+    type: float
+    restore_value: yes
+    initial_value: '21.0'
+  - id: power_state
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: is_connected
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: operating_mode
+    type: int
+    restore_value: yes
+    initial_value: '0'
+
+# ============================================
+# DHT22 Temperature & Humidity Sensor
+# ============================================
+sensor:
+  # DHT22 - External temperature sensor (more accurate than radiator's built-in)
+  - platform: dht
+    pin: ${dht_pin}
+    model: DHT22
+    temperature:
+      name: "Room Temperature"
+      id: dht_temperature
+      accuracy_decimals: 1
+      filters:
+        - sliding_window_moving_average:
+            window_size: 5
+            send_every: 1
+    humidity:
+      name: "Room Humidity"
+      id: dht_humidity
+      accuracy_decimals: 0
+    update_interval: 30s
+
+  # ============================================
+  # BLE Sensors from Radiator
+  # ============================================
+  
+  # Room temperature sensor (reads from b1 characteristic) - radiator's built-in sensor.  This sensor is not accurate.
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: terma_moa_ble_client
+    id: room_temp_raw
+    name: "Radiator Room Sensor"
+    internal: false
+    service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+    characteristic_uuid: 'd97352b1-d19e-11e2-9e96-0800200c9a66'
+    update_interval: 30s
+    notify: false
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+    icon: "mdi:thermometer"
+    lambda: |-
+      if (x.size() >= 4) {
+        float current_room = ((x[0] * 255.0) + x[1]) / 10.0;
+        float target_room = ((x[2] * 255.0) + x[3]) / 10.0;
+        ESP_LOGD("terma", "Room - Current: %.1f°C, Target: %.1f°C", current_room, target_room);
+        if (id(operating_mode) == 5) {
+          id(target_temp) = target_room;
+        }
+        return current_room;
+      }
+      return NAN;
+
+  # Heater temperature sensor (reads from b2 characteristic)
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: terma_moa_ble_client
+    id: heater_temp_raw
+    name: "Radiator Element Temperature"
+    internal: false
+    service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+    characteristic_uuid: 'd97352b2-d19e-11e2-9e96-0800200c9a66'
+    update_interval: 30s
+    notify: false
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+    icon: "mdi:radiator"
+    lambda: |-
+      if (x.size() >= 4) {
+        float current_heater = ((x[0] * 255.0) + x[1]) / 10.0;
+        float target_heater = ((x[2] * 255.0) + x[3]) / 10.0;
+        ESP_LOGD("terma", "Heater - Current: %.1f°C, Target: %.1f°C", current_heater, target_heater);
+        if (id(operating_mode) == 6) {
+          id(target_temp) = target_heater;
+        }
+        return current_heater;
+      }
+      return NAN;
+
+  # Operating mode sensor (reads from b3 characteristic)
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: terma_moa_ble_client
+    id: mode_raw
+    name: "Operating Mode Raw"
+    internal: true
+    service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+    characteristic_uuid: 'd97352b3-d19e-11e2-9e96-0800200c9a66'
+    update_interval: 30s
+    notify: false
+    lambda: |-
+      if (x.size() >= 1) {
+        int mode = x[0];
+        ESP_LOGD("terma", "Operating mode: %d (0=off, 5=room, 6=heater)", mode);
+        id(operating_mode) = mode;
+        id(power_state) = (mode != 0);
+        return (float)mode;
+      }
+      return NAN;
+
+  # Other sensors
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+
+# ============================================
+# Climate Entity for Home Assistant
+# ============================================
+climate:
+  - platform: thermostat
+    name: "Bathroom Heater"
+    id: bathroom_thermostat
+    sensor: dht_temperature # change this to the room_temp_raw sensor if you do not have a separate DHT22
+    default_preset: Home
+    on_boot_restore_from: memory
+    
+    min_heating_off_time: 60s
+    min_heating_run_time: 60s
+    min_idle_time: 30s
+    
+    heat_action:
+      - if:
+          condition:
+            lambda: 'return id(is_connected);'
+          then:
+            - logger.log: "Climate: Heat action triggered"
+            - if:
+                condition:
+                  lambda: 'return !id(power_state);'
+                then:
+                  - lambda: |-
+                      id(power_state) = true;
+                      id(operating_mode) = 5;
+                  # Set temperature first
+                  - ble_client.ble_write:
+                      id: terma_moa_ble_client
+                      service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                      characteristic_uuid: 'd97352b1-d19e-11e2-9e96-0800200c9a66'
+                      value: !lambda |-
+                        // Set radiator to max room temp (30°C) so it heats continuously
+                        // The climate entity will control when to stop via idle_action
+                        int value = 300;  // 30.0 * 10
+                        uint8_t high = value / 255;
+                        uint8_t low = value % 255;
+                        return {0, 0, high, low};
+                  - delay: 500ms
+                  # Set mode to 5 (room temperature)
+                  - ble_client.ble_write:
+                      id: terma_moa_ble_client
+                      service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                      characteristic_uuid: 'd97352b3-d19e-11e2-9e96-0800200c9a66'
+                      value: [5]
+    
+    idle_action:
+      - if:
+          condition:
+            lambda: 'return id(is_connected);'
+          then:
+            - logger.log: "Climate: Idle action triggered - turning off"
+            - if:
+                condition:
+                  lambda: 'return id(power_state);'
+                then:
+                  - lambda: |-
+                      id(power_state) = false;
+                      id(operating_mode) = 0;
+                  - ble_client.ble_write:
+                      id: terma_moa_ble_client
+                      service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                      characteristic_uuid: 'd97352b3-d19e-11e2-9e96-0800200c9a66'
+                      value: [0]
+    
+    heat_deadband: 0.5  # Start heating 0.5°C below target
+    heat_overrun: 0.5   # Stop heating 0.5°C above target
+    
+    preset:
+      - name: Home
+        default_target_temperature_low: 21
+      - name: Away
+        default_target_temperature_low: 16
+      - name: Boost
+        default_target_temperature_low: 24
+    
+    visual:
+      min_temperature: 15
+      max_temperature: 30
+      temperature_step: 0.5
+
+# Binary Sensors
+binary_sensor:
+  - platform: status
+    name: "Connection Status"
+
+  - platform: ble_presence
+    mac_address: ${radiator_mac}
+    name: "Radiator BLE Presence"
+
+  - platform: template
+    name: "Radiator BLE Connected"
+    id: ble_connected_sensor
+    lambda: |-
+      return id(is_connected);
+
+  - platform: template
+    name: "Heating Active"
+    id: heating_active
+    lambda: |-
+      return id(power_state);
+    device_class: heat
+
+# Switches - for manual override if needed or preferred
+switch:
+  - platform: template
+    name: "Radiator Power (Manual)"
+    id: power_switch
+    icon: "mdi:power"
+    optimistic: false
+    lambda: |-
+      return id(power_state);
+    turn_on_action:
+      - if:
+          condition:
+            lambda: 'return id(is_connected);'
+          then:
+            - logger.log: "Manual: Turning power ON (mode 5 - room temp)"
+            - lambda: |-
+                id(power_state) = true;
+                id(operating_mode) = 5;
+            - ble_client.ble_write:
+                id: terma_moa_ble_client
+                service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                characteristic_uuid: 'd97352b1-d19e-11e2-9e96-0800200c9a66'
+                value: !lambda |-
+                  int value = 300;  // 30°C max
+                  uint8_t high = value / 255;
+                  uint8_t low = value % 255;
+                  return {0, 0, high, low};
+            - delay: 500ms
+            - ble_client.ble_write:
+                id: terma_moa_ble_client
+                service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                characteristic_uuid: 'd97352b3-d19e-11e2-9e96-0800200c9a66'
+                value: [5]
+          else:
+            - logger.log: "Not connected - cannot turn on"
+    turn_off_action:
+      - if:
+          condition:
+            lambda: 'return id(is_connected);'
+          then:
+            - logger.log: "Manual: Turning power OFF"
+            - lambda: |-
+                id(power_state) = false;
+                id(operating_mode) = 0;
+            - ble_client.ble_write:
+                id: terma_moa_ble_client
+                service_uuid: 'd97352b0-d19e-11e2-9e96-0800200c9a66'
+                characteristic_uuid: 'd97352b3-d19e-11e2-9e96-0800200c9a66'
+                value: [0]
+          else:
+            - logger.log: "Not connected - cannot turn off"
+
+# Buttons
+button:
+  - platform: template
+    name: "Clear BLE Bonds"
+    icon: "mdi:bluetooth-off"
+    entity_category: diagnostic
+    on_press:
+      - logger.log: "Clearing all BLE bonds..."
+      - lambda: |-
+          int count = esp_ble_get_bond_device_num();
+          if (count > 0) {
+            esp_ble_bond_dev_t *bonded_devices = (esp_ble_bond_dev_t *)malloc(sizeof(esp_ble_bond_dev_t) * count);
+            esp_ble_get_bond_device_list(&count, bonded_devices);
+            for (int i = 0; i < count; i++) {
+              esp_ble_remove_bond_device(bonded_devices[i].bd_addr);
+              ESP_LOGI("ble", "Removed bond %d", i);
+            }
+            free(bonded_devices);
+          }
+          ESP_LOGI("ble", "Cleared %d bonded devices", count);
+      - logger.log: "BLE bonds cleared - restart ESP and put radiator in pairing mode"
+
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
+
+# Text sensor for status
+text_sensor:
+  - platform: template
+    name: "Radiator Status"
+    icon: "mdi:information"
+    lambda: |-
+      if (!id(is_connected)) {
+        return {"Disconnected"};
+      } else if (id(power_state)) {
+        std::string mode_str = (id(operating_mode) == 5) ? "Room Mode" : "Element Mode";
+        return {mode_str + " - Heating"};
+      } else {
+        return {"Standby"};
+      }
+    update_interval: 5s
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
+    ssid:
+      name: "Connected SSID"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+
+  - platform: version
+    name: "ESPHome Version"
+    entity_category: diagnostic
