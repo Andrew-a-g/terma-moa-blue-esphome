@@ -265,6 +265,7 @@ This project is provided as-is for personal use. The Terma MOA Blue protocol was
 ## Acknowledgments
 
 - [Home Assistant Community](https://community.home-assistant.io/t/terma-blue-line-bluetooth-radiators-and-heating-elements/81325) - Protocol reverse engineering
+- [homebridge-TERMA-MOA-Blue](https://github.com/J1mbo/homebridge-TERMA-MOA-Blue/)
 - [ESPHome](https://esphome.io/) - Excellent IoT firmware framework
 - [Anthropic Claude](https://claude.ai/) - AI assistance in developing this integration to solve the bluetooth persistent connection pain
 
