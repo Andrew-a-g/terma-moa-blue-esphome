@@ -54,7 +54,7 @@ DATA   ───── GPIO4 (configurable)
 
 ![DHT22 Wiring Diagram](esp-dht22-wiring.png)
 
-**Note:** Some DHT22 modules require a 10kΩ pull-up resistor between VCC (3.3V) and the DATA pin for reliable readings. Modules with a built-in PCB typically include this resistor.  The module tested is shown in the picture below.
+**Note:** Some DHT22 modules require a 10kΩ pull-up resistor between VCC (3.3V) and the DATA pin for reliable readings. Modules with a built-in PCB typically include this resistor.  The module tested does not require this and is shown in the picture above.
 
 
 ## Installation
